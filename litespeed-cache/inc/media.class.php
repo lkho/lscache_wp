@@ -427,13 +427,10 @@ eot;
 		$cfg_img_lazy = LiteSpeed_Cache::config( LiteSpeed_Cache_Config::OPID_MEDIA_IMG_LAZY ) ;
 		$cfg_iframe_lazy = LiteSpeed_Cache::config( LiteSpeed_Cache_Config::OPID_MEDIA_IFRAME_LAZY ) ;
 
+		// img lazy load
 		if ( $cfg_img_lazy ) {
 			list( $src_list, $html_list, $placeholder_list ) = $this->_parse_img() ;
 			$html_list_ori = $html_list ;
-		}
-
-		// image lazy load
-		if ( $cfg_img_lazy ) {
 
 			$default_placeholder = LiteSpeed_Cache::config( LiteSpeed_Cache_Config::OPID_MEDIA_IMG_LAZY_PLACEHOLDER ) ?: LITESPEED_PLACEHOLDER ;
 
@@ -455,9 +452,35 @@ eot;
 
 				$html_list[ $k ] = $snippet ;
 			}
+
+			$this->content = str_replace( $html_list_ori, $html_list, $this->content ) ;
 		}
 
+		// css background-image lazy load
 		if ( $cfg_img_lazy ) {
+			list( $src_list, $style_list, $html_list, $placeholder_list ) = $this->_parse_background_image() ;
+			$html_list_ori = $html_list ;
+
+			$default_placeholder = LiteSpeed_Cache::config( LiteSpeed_Cache_Config::OPID_MEDIA_IMG_LAZY_PLACEHOLDER ) ?: LITESPEED_PLACEHOLDER ;
+
+			foreach ( $html_list as $k => $v ) {
+				$size = $placeholder_list[ $k ] ;
+				$src = $src_list[ $k ] ;
+				// Check if need to enable responsive placeholder or not
+				$this_placeholder = $this->_placeholder( $size ) ?: $default_placeholder ;
+
+				$additional_attr = '' ;
+				if ( $this_placeholder != $default_placeholder ) {
+					LiteSpeed_Cache_Log::debug2( '[Media] Use resp placeholder [size] ' . $size ) ;
+					$additional_attr = ' data-placeholder-resp="' . $size . '"' ;
+				}
+
+				$v = str_replace( $src, "url(\"$this_placeholder\")", $v ) ;
+				$v = str_replace( '>', ' data-lazyloaded="1"' . $additional_attr . ' data-bg="' . $src . '">', $v ) ;
+
+				$html_list[ $k ] = $v ;
+			}
+
 			$this->content = str_replace( $html_list_ori, $html_list, $this->content ) ;
 		}
 
@@ -691,6 +714,107 @@ eot;
 		}
 
 		return $html_list ;
+	}
+
+
+	/**
+	 * Parse inline style background-image
+	 *
+	 * @since  2.9.10
+	 * @access private
+	 * @return array  All the background-image & related raw html list
+	 */
+	private function _parse_background_image()
+	{
+		/**
+		 * Exclude list
+		 * @since 1.5
+		 * @since  2.7.1 Changed to array
+		 */
+		$excludes = apply_filters( 'litespeed_cache_media_lazy_img_excludes', LiteSpeed_Cache_Config::get_instance()->get_item( LiteSpeed_Cache_Config::ITEM_MEDIA_LAZY_IMG_EXC ) ) ;
+
+		$cls_excludes = apply_filters( 'litespeed_media_lazy_img_cls_excludes', LiteSpeed_Cache_Config::get_instance()->get_item( LiteSpeed_Cache_Config::ITEM_MEDIA_LAZY_IMG_CLS_EXC ) ) ;
+
+		$src_list = array() ;
+		$style_list = array() ;
+		$html_list = array() ;
+		$placeholder_list = array() ;
+
+		$content = preg_replace( '#<!--.*-->#sU', '', $this->content ) ;
+		preg_match_all( '#<[a-z-_]+\s+([^>]+)/?>#isU', $content, $matches, PREG_SET_ORDER ) ;
+		foreach ( $matches as $match ) {
+			$attrs = LiteSpeed_Cache_Utility::parse_attr( $match[ 1 ] ) ;
+
+			if ( empty( $attrs[ 'style' ] ) ) {
+				continue ;
+			}
+
+			if ( ! preg_match( '#background-image:\s+(.+)(?=;|$)#isU', $attrs[ 'style' ], $styleMatches ) ) {
+				continue ;
+			}
+			$src = $styleMatches[ 1 ] ;
+			if ( ! preg_match('#url\((.+)\)#isU', $src, $urlMatches ) ) {
+				continue ;
+			}
+			$url = trim( $urlMatches[ 1 ], " \t\n\r\0\x0B\"'" ) ;
+
+			/**
+			 * Add src validation to bypass base64 img src
+			 * @since  1.6
+			 */
+			if ( strpos( $url, 'base64' ) !== false || substr( $url, 0, 5 ) === 'data:' ) {
+				LiteSpeed_Cache_Log::debug2( '[Media] lazyload bypassed base64 img' ) ;
+				continue ;
+			}
+
+			LiteSpeed_Cache_Log::debug2( '[Media] lazyload found: ' . $url ) ;
+
+			if ( ! empty( $attrs[ 'data-no-lazy' ] ) || ! empty( $attrs[ 'data-lazyloaded' ] ) || ! empty( $attrs[ 'data-bg' ] ) ) {
+				LiteSpeed_Cache_Log::debug2( '[Media] bypassed' ) ;
+				continue ;
+			}
+
+			if ( ! empty( $attrs[ 'class' ] ) && $hit = LiteSpeed_Cache_Utility::str_hit_array( $attrs[ 'class' ], $cls_excludes ) ) {
+				LiteSpeed_Cache_Log::debug2( '[Media] lazyload image cls excludes [hit] ' . $hit ) ;
+				continue ;
+			}
+
+			/**
+			 * Exclude from lazyload by setting
+			 * @since  1.5
+			 */
+			if ( $excludes && LiteSpeed_Cache_Utility::str_hit_array( $url, $excludes ) ) {
+				LiteSpeed_Cache_Log::debug2( '[Media] lazyload image exclude ' . $url ) ;
+				continue ;
+			}
+
+			/**
+			 * Excludes invalid image src from buddypress avatar crop
+			 * @see  https://wordpress.org/support/topic/lazy-load-breaking-buddypress-upload-avatar-feature/#post-11040512
+			 * @since  2.9.1
+			 */
+			if ( strpos( $url, '{' ) !== false ) {
+				LiteSpeed_Cache_Log::debug2( '[Media] image src has {} ' . $url ) ;
+				continue ;
+			}
+
+			// to avoid multiple replacement
+			if ( in_array( $match[ 0 ], $html_list ) ) {
+				continue ;
+			}
+
+			$placeholder = false ;
+			if ( ! empty( $attrs[ 'width' ] ) && ! empty( $attrs[ 'height' ] ) ) {
+				$placeholder = $attrs[ 'width' ] . 'x' . $attrs[ 'height' ] ;
+			}
+
+			$src_list[] = $src ;
+			$style_list[] = $styleMatches[ 0 ] ;
+			$html_list[] = $match[ 0 ] ;
+			$placeholder_list[] = $placeholder ;
+		}
+
+		return array( $src_list, $style_list, $html_list, $placeholder_list ) ;
 	}
 
 	/**
@@ -1070,7 +1194,7 @@ eot;
 	 *
 	 * @since 1.4
 	 * @access public
-	 * @return Current class instance.
+	 * @return self class instance.
 	 */
 	public static function get_instance()
 	{
