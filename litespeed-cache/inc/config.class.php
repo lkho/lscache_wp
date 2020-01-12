@@ -806,7 +806,7 @@ class LiteSpeed_Cache_Config extends LiteSpeed_Cache_Const
 	 *
 	 * @since 1.1.0
 	 * @access public
-	 * @return Current class instance.
+	 * @return self class instance.
 	 */
 	public static function get_instance()
 	{
